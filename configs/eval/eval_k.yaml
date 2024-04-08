@@ -1,0 +1,4 @@
+eval_samples: 1496
+hparams: /app/configs/train/allclasses_lossatt.yaml
+model_dir: /app/models/trained_models/---/
+val_file_pattern: /app/datasets/KITTI/tf/_val.tfrecord

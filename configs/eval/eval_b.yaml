@@ -1,0 +1,4 @@
+eval_samples: 10000
+hparams: /app/configs/train/allclasses_lossatt_BDD.yaml
+model_dir: /app/models/trained_models/---/
+val_file_pattern: /app/datasets/BDD100K/tf/_val100k.tfrecord

@@ -1,0 +1,4 @@
+eval_samples: 4494
+hparams: /app/configs/train/allclasses_mcdropout_lossatt_BDD_head.yaml
+model_dir: /app/models/trained_models/---/
+val_file_pattern: /app/datasets/CODA/tf_BDD/_val.tfrecord

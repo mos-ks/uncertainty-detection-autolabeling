@@ -1,0 +1,4 @@
+eval_samples: 452
+hparams: /app/configs/train/allclasses_mcdropout_lossatt_head.yaml
+model_dir: /app/models/trained_models/---/
+val_file_pattern: /app/datasets/CODA/tf_val_split/kCODA/_val_---.tfrecord
