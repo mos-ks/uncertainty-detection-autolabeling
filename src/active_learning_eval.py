@@ -944,7 +944,11 @@ class Similarity:
 
     @staticmethod
     def calculate_set_similarity(
-        crops_metrics_perc, classes, methods, return_perclass=False
+        crops_metrics_perc,
+        classes,
+        methods,
+        return_perclass=False,
+        min_class_crops=None,
     ):
         """Calculates similarity between sets
 
@@ -953,6 +957,8 @@ class Similarity:
             classes (list): List with class names
             methods (list): List with AL methods names = set names
             return_perclass (bool, optional): Returns the similarity per class as well. Defaults to False.
+            min_class_crops (int, optional): If set, the class weighting excludes the classes with fewer crops in the reference set
+                instead of the classes below the first quartile, e.g., 50 for the 80 classes of MS COCO. Defaults to None.
 
         Returns:
             The AL methodand their set similarity to the reference set, the class weighting activation status, the similarity per class
@@ -998,7 +1004,20 @@ class Similarity:
             ],
             axis=-1,
         )  # Average detections per class
-        classes_low_dets = class_weights < np.percentile(class_weights, 25)
+        if min_class_crops is None:
+            classes_low_dets = class_weights < np.percentile(class_weights, 25)
+        else:
+            reference_crops = np.asarray(
+                [
+                    (
+                        len(crops_metrics_perc[-1][cl][0])
+                        if len(crops_metrics_perc[-1][cl]) > 0
+                        else 0
+                    )
+                    for cl in classes
+                ]
+            )
+            classes_low_dets = reference_crops < min_class_crops
         class_weights = 1 / class_weights
         activate_class_weight = (
             np.round(np.nanstd(class_weights) / np.nanmean(class_weights), 1) > 1.3

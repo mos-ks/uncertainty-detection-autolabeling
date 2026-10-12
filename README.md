@@ -17,6 +17,7 @@
    - [Auto-Labeling](#auto-labeling)
 - Active Learning Experiments:
    - [Active Learning](#active-learning)
+   - [Core-Set, Additional Detectors, and MS COCO](#core-set-additional-detectors-and-ms-coco)
 - Semi-Supervised Learning Experiments:
    - [Semi-Supervised Learning](#semi-supervised-learning)
 
@@ -237,6 +238,8 @@ Possible options:
  - Hashing-based methods:
    - `prune`: Removes images then adjusts the iteration budget to still match the original one in order to compare at the same 5%, 10%, etc.
    - `full_prune`: Removes images then trains once on the rest of the pool.
+   - `uncdiv`: Uncertainty-diversity hybrid. The warm-up set consists of the images closest to the centroids of a k-means clustering of the image hashes. In each iteration, the scored images are clustered via k-means on their hash and number of predicted classes into as many clusters as images to select, and the image with the highest score is selected per cluster, e.g., `uncdiv_mean_entropy`.
+   - `cls`: Combined with `uncdiv`, selects per cluster the image with the most predicted classes, with ties broken by the score, e.g., `uncdiv_mean_cls_entropy`.
  - Aggregation strategy:
    - `bottomk`: Selects bottom-k uncertainty
    - `nee`: Balance exploration and exploitation in the binned score values, as per *Roy, S., Unmesh, A., Namboodiri, V.P.: Deep active learning for object detection.
@@ -274,6 +277,42 @@ Possible options:
      Otherwise the reference set is the whole pool.
 
 Both AL files allow the selection of a different reference path to their location in case of specific remote implementations.
+
+### Core-Set, Additional Detectors, and MS COCO
+
+The core-set selection and the YOLO training runs on KITTI use the AL index files `<DATASET>_train_indices_<strategy>_<iteration><added_name>.txt` and TFRecords written by `active_learning_loop.py`.
+
+**Core-set selection** (greedy k-center on whole-image DINOv2 ViT-S/14 embeddings, starting from the common warm-up set) writes index files of the same format to `datasets/KITTI/tf_active/coreset_dino/`. It requires PyTorch 2, e.g., the environment in `yolo/yolov11/requirements.txt`:
+```bash
+python src/coreset_selection.py --warmup_file datasets/KITTI/tf_active/random/V0/KITTI_train_indices_random_0_V0.txt
+```
+
+**YOLOv11-s** (`yolo/yolov11`, requirements in `yolo/yolov11/requirements.txt`) is fine-tuned from MS COCO weights on the KITTI AL selections for 100 epochs with a batch size of 32 and an input resolution of 640x640:
+```bash
+python yolo/kitti_to_yolo.py --kitti_training datasets/KITTI/training --val_index_list datasets/KITTI/vaL_index_list.txt --output datasets/KITTI/yolo
+python yolo/yolov11/prepare_run.py kitti --yolo_root datasets/KITTI/yolo --index_file datasets/KITTI/tf_active/entropy/V0/KITTI_train_indices_entropy_1_V0.txt --name entropy_1_V0 --output_dir datasets/KITTI/yolo_AL --runs_dir runs/yolov11
+python yolo/yolov11/train.py --config datasets/KITTI/yolo_AL/entropy_1_V0/train.yaml
+```
+The mAP is reported in `results.csv` of each run.
+
+**YOLOv3** (`yolo/yolov3`, based on [yolov3-tf2](https://github.com/zzh8829/yolov3-tf2) under the MIT license in `yolo/yolov3/LICENSE`, requirements in `yolo/yolov3/requirements.txt`) is fine-tuned from MS COCO weights on the TFRecord of each KITTI AL selection for 50 epochs with an input resolution of 1024x1024, a batch size of 8, and a learning rate of 0.0001. Convert the Darknet weights and create the COCO-format KITTI validation annotations once, then train and evaluate per selection:
+```bash
+cd yolo/yolov3
+wget https://pjreddie.com/media/files/yolov3.weights -O data/yolov3.weights
+python convert.py --weights data/yolov3.weights --output checkpoints/yolov3.tf
+python kitti2coco.py --data_dir ../../datasets/KITTI/training --val_index_list ../../datasets/KITTI/vaL_index_list.txt --output_json ../../datasets/KITTI/output_coco.json
+cd ../..
+bash yolo/yolov3/run_kitti_al.sh datasets/KITTI/tf_active/entropy/V0/_train_1_V0.tfrecord entropy_1_V0
+```
+
+**MS COCO composition probes** (`coco_probes`) are seven sets of 5,900 train2017 images each, drawn with weights that favor crowded, sparse, large-object, small-object, head-class, tail-class, or random images. YOLOv11-s is trained from scratch on each probe for 150 epochs and evaluated on val2017, which also serves as the reference set. Instead of the first quartile, which suits the few and strongly imbalanced classes of autonomous driving datasets, the class weighting excludes classes with fewer than 50 reference crops (`min_class_crops` in `Similarity.calculate_set_similarity`), which ensures enough crops for the KDE. With MS COCO in `<coco_root>/annotations`, `<coco_root>/train2017/images`, and `<coco_root>/val2017/images`:
+```bash
+python coco_probes/coco_to_yolo.py --coco_root <coco_root>
+python coco_probes/make_probes.py --coco_train <coco_root>/train2017
+python yolo/yolov11/prepare_run.py coco --coco_root <coco_root> --probe coco_random --annotations <coco_root>/annotations/instances_val2017.json --output_dir <coco_root>/probe_roots --runs_dir runs/coco_probes
+python yolo/yolov11/train.py --config <coco_root>/probe_roots/coco_random/train.yaml
+python coco_probes/compute_oss.py --coco_root <coco_root>
+```
 
 ## Semi-Supervised Learning
 This repository contains implementations of Semi-Supervised Learning (SSL) approaches for object detection, including pseudo-labels- and consistency-based methods.
