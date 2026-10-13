@@ -18,6 +18,7 @@ import tensorflow as tf
 import uncertainty_analysis
 import yaml
 from PIL import Image
+from sklearn.cluster import KMeans
 from utils_box import relativize_uncert
 
 sys.path.insert(7, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -166,6 +167,8 @@ class ActiveLearning:
             train_im_names, len_train_ims, kept_inds = self.extract_hash_matrix(
                 len_train_ims
             )
+        if "uncdiv" in scoring_strategy:
+            self.load_hash_values()
         # Universal AL config
         self.infer_results = (
             self.general_path + "/results/inference/"
@@ -315,6 +318,66 @@ class ActiveLearning:
         len_train_ims = len(self.available_indices)
         return train_im_names, len_train_ims, kept_inds
 
+    def load_hash_values(self):
+        """Loads or calculates the hash of each available image for the uncertainty-diversity hybrids"""
+        hash_values_path = self.data_dir + "/" + self.hash_method + "_hash_ims.npy"
+        if os.path.exists(hash_values_path):
+            self.hash_values = np.load(hash_values_path, allow_pickle=True)
+        else:
+            hashes = []
+            for im_name in [self.im_names[i] for i in self.available_indices]:
+                im = Image.open(self.data_dir_im + im_name).resize((512, 256))
+                if self.hash_method == "p":
+                    hash_value = imagehash.phash(im)
+                else:
+                    hash_value = imagehash.whash(im)
+                hashes.append(hash_value)
+                im.close()
+            self.hash_values = np.asarray(hashes)
+            np.save(hash_values_path, self.hash_values, allow_pickle=True)
+        int_base = 16 if self.hash_method == "p" else 32
+        # Converted per value, as 64-bit hashes can exceed the int64 range
+        self.hash_ints = np.asarray(
+            [float(int(str(h), int_base)) for h in self.hash_values]
+        )
+
+    def generate_kmeans_warmup(self):
+        """Selects the warm-up images of the hybrids closest to the centroids of a k-means clustering of the image hashes"""
+        num_samples = sum(self.ims_per_iter[: self.current_iteration + 1])
+        hash_ints = self.hash_ints.reshape(-1, 1)
+        kmeans = KMeans(n_clusters=num_samples)
+        kmeans.fit(hash_ints)
+        centroids = np.sort(kmeans.cluster_centers_.flatten())
+        selected = [
+            np.argmin(np.abs(hash_ints - centroids[i])) for i in range(num_samples)
+        ]
+        return [self.available_indices[i] for i in selected]
+
+    def select_uncertainty_diversity(
+        self, per_image_al_score, pred_classes, pred_imgs_names
+    ):
+        """Clusters the scored images via k-means on their hash and number of predicted classes into as many clusters as images to select,
+        then selects per cluster the image with the highest score, or for "cls" the one with the most predicted classes (ties broken by score)
+        """
+        available_rows = {
+            self.im_names[idx].split(".")[0]: row
+            for row, idx in enumerate(self.available_indices)
+        }
+        hash_rows = [available_rows[name.split(".")[0]] for name in pred_imgs_names]
+        n_classes = np.asarray([len(set(cls)) for cls in pred_classes])
+        scores = np.asarray(per_image_al_score)
+        kmeans = KMeans(n_clusters=self.num_per_iter)
+        kmeans.fit(np.stack([self.hash_ints[hash_rows], n_classes], axis=-1))
+        selected_images = []
+        for cluster in range(self.num_per_iter):
+            members = np.where(kmeans.labels_ == cluster)[0]
+            if "cls" in self.scoring_strategy:
+                best = members[np.lexsort((scores[members], n_classes[members]))[-1]]
+            else:
+                best = members[np.argmax(scores[members])]
+            selected_images.append(pred_imgs_names[best].split(".")[0])
+        return selected_images
+
     @staticmethod
     def min_max_scaler(data):
         """Scales the data from 0 to 1 based on min and max"""
@@ -365,8 +428,11 @@ class ActiveLearning:
                 for line in file:
                     current_indices.append(int(line.strip()))
         if self.current_iteration < len(self.iteration_budget) - 1:
+            # Hash-based warm-up of the uncertainty-diversity hybrids
+            if "uncdiv" in self.scoring_strategy and self.current_iteration == 0:
+                train_indices = self.generate_kmeans_warmup()
             # Random select
-            if "random" in self.scoring_strategy or self.current_iteration == 0:
+            elif "random" in self.scoring_strategy or self.current_iteration == 0:
                 train_indices = self.generate_random(current_indices)
             # AL strategy
             else:
@@ -800,7 +866,11 @@ class ActiveLearning:
             ]
             per_image_al_score = np.multiply(per_image_cls_score, per_image_al_score)
 
-        if "nee" in self.scoring_strategy:
+        if "uncdiv" in self.scoring_strategy:
+            selected_images = self.select_uncertainty_diversity(
+                per_image_al_score, pred_classes, pred_imgs_names
+            )
+        elif "nee" in self.scoring_strategy:
             n = 5
             batch_size = self.num_per_iter // n
             remainder = self.num_per_iter % n

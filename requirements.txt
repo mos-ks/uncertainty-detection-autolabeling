@@ -6,6 +6,7 @@ brisque
 tensorflow==2.10.0
 tensorflow-probability==0.17.0
 imagehash
+scikit-learn
 seaborn
 tensorflow-object-detection-api==0.1.1
 ijson
